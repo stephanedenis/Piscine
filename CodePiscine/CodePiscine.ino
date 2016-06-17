@@ -1,23 +1,24 @@
 
 /*
  * Pool monitor and remote control
- * 
+ *
  * By Stephane Denis
  * Under MIT License
  */
- 
-#define LDRPIN      A5  // Light sensor
-#define ORPPIN      PC1 // Pool Free Chlorine
+
+#define LDRPIN      19  // Light sensor
+#define ORPPIN      PC1 // Pool Free Chlorine = Oxidation/Reduction Potential (ORP)
 #define PHPIN       PC0 // Pool Ph
-#define DS18B20PIN  PC2 // Pool temperature
-#define DHTPIN      PC3 // Air temperature and relative humidity
+#define DS18B20PIN  16 // Pool temperature
+#define DHTPIN      17 // Air temperature and relative humidity
 
 
 #include <OneWire.h>
 OneWire  ds(DS18B20PIN);  // Pool temperature sensor (a 4.7K resistor is necessary)
 
-#include <dht11.h>
-dht11 DHT;
+#include "DHT.h"
+#define DHTTYPE DHT11
+DHT dht(DHTPIN, DHTTYPE);
 
 #include <SPI.h>
 #include <Adafruit_GFX.h>
@@ -30,99 +31,48 @@ dht11 DHT;
 // pin 3 - LCD reset (RST)
 Adafruit_PCD8544 display = Adafruit_PCD8544(7, 6, 5, 4, 3);
 
-bool backlight;
+byte i;
+byte present = 0;
+byte type_s;
+byte data[12];
+byte addr[8];
 
 void setup() {
   Serial.begin(9600);
 
+  display.begin();
   display.setContrast(50);
   display.setTextSize(1);
   display.setTextColor(BLACK);
 
   // LED Backlight
-  pinMode(LED_BUILTIN,OUTPUT);
-  setBacklignt(true);
-}
+  pinMode(LED_BUILTIN, OUTPUT);
+  digitalWrite(LED_BUILTIN, HIGH);
 
-void loop() {
- setBacklignt(!backlight); // Blink
+  // Environment
+  dht.begin();
 
-  
 
-  
-  display.clearDisplay();
-  display.setCursor(0,0);
-
-  display.println("Air");
-  display.print("Temperature : ");
-  getTemperature();
-  //display.println(getTemperature());
-
-  display.print("Humidity : ");
-  //display.println(getRelHumidity());
-  display.display();
-
-  getPoolTemperature();
-  
-  delay(1000);
-}
-
-float getTemperature(){
-  int chk;
-    chk = DHT.read(DHTPIN);    // READ DATA
-  switch (chk){
-    case DHTLIB_OK:  
-                Serial.print("OK,\t"); 
-                break;
-    case DHTLIB_ERROR_CHECKSUM: 
-                Serial.print("Checksum error,\t"); 
-                break;
-    case DHTLIB_ERROR_TIMEOUT: 
-                Serial.print("Time out error,\t"); 
-                break;
-    default: 
-                Serial.print("Unknown error,\t"); 
-                break;
-  }
- // DISPLAT DATA
-  Serial.print(DHT.humidity,1);
-  Serial.print(",\t");
-  Serial.println(DHT.temperature,1);
-}
-
-void setBacklignt(bool on){
-  digitalWrite(LED_BUILTIN,on);
-  backlight = on;
-}
-
-float getPoolTemperature(){
-  byte i;
-  byte present = 0;
-  byte type_s;
-  byte data[12];
-  byte addr[8];
-  float celsius, fahrenheit;
-  
+  // Pool thermometer
   if ( !ds.search(addr)) {
     Serial.println("No more addresses.");
     Serial.println();
     ds.reset_search();
     delay(250);
-    return 0;
   }
-  
+
+  byte addr[8];
   Serial.print("ROM =");
-  for( i = 0; i < 8; i++) {
+  for ( i = 0; i < 8; i++) {
     Serial.write(' ');
     Serial.print(addr[i], HEX);
   }
 
   if (OneWire::crc8(addr, 7) != addr[7]) {
-      Serial.println("CRC is not valid!");
-      return 0;
+    Serial.println("CRC is not valid!");
   }
   Serial.println();
- 
+
   // the first ROM byte indicates which chip
   switch (addr[0]) {
     case 0x10:
@@ -139,32 +89,113 @@ float getPoolTemperature(){
       break;
     default:
       Serial.println("Device is not a DS18x20 family device.");
-      return 0;
-  } 
+  }
+}
 
+void loop() {
+
+  float light = analogRead(LDRPIN) / 1024.0;
+  float airHumidity = dht.readHumidity() / 100.0;
+  float airCelsius = dht.readTemperature();
+  float airFarenheit = dht.readTemperature(true);
+  float poolCelsius = getPoolTemperature();
+  float poolFarenheit = poolCelsius * 1.8 + 32.0;
+  float poolPh = 7 - (2.5 - analogRead(PHPIN) / 200.0) / (0.257179 + 0.000941468 * poolCelsius);
+  float poolORP = (2.5 - analogRead(ORPPIN) / 200.0) / 1.037;
+
+
+  Serial.print("{");
+  Serial.print("\"light\":");
+  Serial.print(light);
+  Serial.print(",\"airHumidity\":");
+  Serial.print(airHumidity);
+  Serial.print(",\"airCelsius\":");
+  Serial.print(airCelsius);
+  Serial.print(",\"airFarenheit\":");
+  Serial.print(airFarenheit);
+  Serial.print(",\"poolCelsius\":");
+  Serial.print(poolCelsius);
+  Serial.print(",\"poolFarenheit\":");
+  Serial.print(poolFarenheit);
+  Serial.print(",\"poolPh\":");
+  Serial.print(poolPh);
+  Serial.print(",\"poolORP\":");
+  Serial.print(poolORP);
+  Serial.println("}");
+
+  display.clearDisplay();
+  display.setCursor(0, 0);
+
+  // Check if any reads failed and exit early (to try again).
+  if (isnan(airHumidity) || isnan(airCelsius) || isnan(airFarenheit)) {
+    Serial.println("Failed to read from DHT sensor!");
+  }
+  else {
+    display.println("Environnement");
+    display.println();
+
+    display.print("T:");
+    display.print(int(airCelsius));
+    display.print("C, H:");
+    display.print(int(airHumidity * 100));
+    display.println("%");
+    display.println();
+  }
+  display.print("Lumiere:");
+  display.println(light * 100);
+  display.display();
+
+  delay(2000);
+  display.clearDisplay();
+  display.setCursor(0, 0);
+
+  display.println("Eau");
+  display.println();
+
+  display.print("T:");
+  display.print(int(poolCelsius));
+  display.print("C ");
+  display.print(int(poolFarenheit));
+  display.println("F ");
+  display.println();
+
+  display.print("Ph:");
+  display.println(poolPh);
+  display.print("ORP:");
+  display.print(poolORP);
+  display.println();
+
+  display.display();
+  delay(2000);
+}
+
+
+float getPoolTemperature() {
   ds.reset();
   ds.select(addr);
   ds.write(0x44, 1);        // start conversion, with parasite power on at the end
-  
+
   delay(1000);     // maybe 750ms is enough, maybe not
   // we might do a ds.depower() here, but the reset will take care of it.
-  
-  present = ds.reset();
-  ds.select(addr);    
-  ds.write(0xBE);         // Read Scratchpad
 
-  Serial.print("  Data = ");
-  Serial.print(present, HEX);
-  Serial.print(" ");
+  present = ds.reset();
+  ds.select(addr);
+  ds.write(0xBE);         // Read Scratchpad
+  /*
+    Serial.print("  Data = ");
+    Serial.print(present, HEX);
+    Serial.print(" ");
+    */
   for ( i = 0; i < 9; i++) {           // we need 9 bytes
     data[i] = ds.read();
-    Serial.print(data[i], HEX);
-    Serial.print(" ");
+    //Serial.print(data[i], HEX);
+    //Serial.print(" ");
   }
+  /*
   Serial.print(" CRC=");
   Serial.print(OneWire::crc8(data, 8), HEX);
   Serial.println();
-
+  */
   // Convert the data to actual temperature
   // because the result is a 16 bit signed integer, it should
   // be stored to an "int16_t" type, which is always 16 bits
@@ -184,14 +215,7 @@ float getPoolTemperature(){
     else if (cfg == 0x40) raw = raw & ~1; // 11 bit res, 375 ms
     //// default is 12 bit resolution, 750 ms conversion time
   }
-  celsius = (float)raw / 16.0;
-  fahrenheit = celsius * 1.8 + 32.0;
-  Serial.print("  Temperature = ");
-  Serial.print(celsius);
-  Serial.print(" Celsius, ");
-  Serial.print(fahrenheit);
-  Serial.println(" Fahrenheit");
-  
+
   return (float)raw / 16.0;
 }
 
